@@ -18,6 +18,8 @@ pub mod error;
 pub mod group;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod history;
+
+pub mod members;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod direct_backups;
 #[cfg(not(target_arch = "wasm32"))]

@@ -369,6 +369,9 @@ impl FireflyWsClientCallback for InternalSignalCallback {
     async fn on_group_updated(&self, group_id: u64) {
         self.inner.on_group_updated(group_id).await;
     }
+    async fn on_group_members_changed(&self, group_id: u64, added: Vec<String>, removed: Vec<String>) {
+        self.inner.on_group_members_changed(group_id, added, removed).await;
+    }
     async fn on_unauthenticated(&self) {
         self.inner.on_unauthenticated().await;
     }
@@ -3061,6 +3064,7 @@ impl FireflyWsClient {
         self.group_messages_store
             .update_cursor(id, groupId, group.epoch().await as u32)
             .await?;
+        sync_group_members(&group, &self.key_value_store, &self.callbacks).await;
 
         if let Err(err) = self.re_encrypt_and_send_pinned_messages(groupId).await {
             log::warn!("Failed to re-encrypt pinned messages after re_add_member: {:?}", err);
@@ -3563,6 +3567,7 @@ impl FireflyWsClient {
             ));
         }
 
+        sync_group_members(&group, &self.key_value_store, &self.callbacks).await;
         self.callbacks.on_group_joined(groupId).await;
 
         Ok(group)
@@ -4160,6 +4165,7 @@ impl FireflyWsClient {
         self.group_messages_store
             .update_cursor(id, group_id, group.epoch().await as u32)
             .await?;
+        sync_group_members(&group, &self.key_value_store, &self.callbacks).await;
 
         if let Err(err) = self.re_encrypt_and_send_pinned_messages(group_id).await {
             log::warn!("Failed to re-encrypt pinned messages after add_group_member: {:?}", err);
@@ -4216,6 +4222,7 @@ impl FireflyWsClient {
         self.group_messages_store
             .update_cursor(id, groupId, group.epoch().await as u32)
             .await?;
+        sync_group_members(&group, &self.key_value_store, &self.callbacks).await;
 
         Ok(())
     }
@@ -4962,6 +4969,14 @@ impl FireflyWsClient {
 
 }
 
+async fn sync_group_members(
+    group: &FfiMlsGroup,
+    key_value_store: &KeyValueStore,
+    callbacks: &Arc<dyn FireflyWsClientCallback>,
+) {
+    crate::members::sync_group_members(group, key_value_store, callbacks.as_ref()).await;
+}
+
 async fn on_group_message(
     msg: &firefly::GroupMessage<'_>,
     firefly_mls_client: &FfiMlsClient,
@@ -5153,6 +5168,7 @@ async fn on_group_message(
                 .update_cursor(msg.id, msg.groupId, epoch)
                 .await?;
             callbacks.on_group_updated(groupId).await;
+            sync_group_members(&group, key_value_store, callbacks).await;
         }
         _ => {
             group_message_store
@@ -5421,6 +5437,7 @@ async fn re_add_member_internal(
     firefly_mls_client: &FfiMlsClient,
     group_info_store: &GroupInfoStore,
     group_message_store: &GroupMessagesStore,
+    key_value_store: &KeyValueStore,
     _pending_requests: &PendingRequests,
     _sender: &Sender<Bytes>,
     callbacks: &Arc<dyn FireflyWsClientCallback>,
@@ -5481,6 +5498,7 @@ async fn re_add_member_internal(
     group_message_store
         .update_cursor(id, group_id, group.epoch().await as u32)
         .await?;
+    sync_group_members(&group, key_value_store, callbacks).await;
 
     // Delete reAdd request from server
     if let Some(token) = callbacks.get_access_token().await {
@@ -5505,6 +5523,7 @@ async fn add_member_internal(
     firefly_mls_client: &FfiMlsClient,
     group_info_store: &GroupInfoStore,
     group_message_store: &GroupMessagesStore,
+    key_value_store: &KeyValueStore,
     _pending_requests: &PendingRequests,
     _sender: &Sender<Bytes>,
     callbacks: &Arc<dyn FireflyWsClientCallback>,
@@ -5521,6 +5540,7 @@ async fn add_member_internal(
     group_message_store
         .update_cursor(id, group_id, group.epoch().await as u32)
         .await?;
+    sync_group_members(&group, key_value_store, callbacks).await;
 
     callbacks.on_group_history_signal(crate::callbacks::GroupHistorySignal{group_id,signal_type:7,request_id:0,chunk_id:0,username:callbacks.name().to_string()}).await;
     Ok(())
@@ -5594,6 +5614,7 @@ async fn join_group_internal(
     firefly_mls_client: &FfiMlsClient,
     group_info_store: &GroupInfoStore,
     group_message_store: &GroupMessagesStore,
+    key_value_store: &KeyValueStore,
     callbacks: &Arc<dyn FireflyWsClientCallback>,
 ) -> anyhow::Result<()> {
     let group_id = invite.groupId;
@@ -5646,6 +5667,7 @@ async fn join_group_internal(
             .await;
     }
 
+    sync_group_members(&group, key_value_store, callbacks).await;
     callbacks.on_group_joined(group_id).await;
 
     Ok(())
@@ -5767,6 +5789,7 @@ async fn on_server_message(
                 firefly_mls_client,
                 group_info_store,
                 group_message_store,
+                key_value_store,
                 callbacks,
             )
             .await
@@ -5817,6 +5840,7 @@ async fn on_server_message(
                 let mls = firefly_mls_client.clone();
                 let gis = group_info_store.clone();
                 let gms = group_message_store.clone();
+                let kvs = key_value_store.clone();
                 let pr = pending_requests.clone();
                 let snd = sender.clone();
                 let cb = callbacks.clone();
@@ -5828,6 +5852,7 @@ async fn on_server_message(
                         &mls,
                         &gis,
                         &gms,
+                        &kvs,
                         &pr,
                         &snd,
                         &cb,
@@ -5853,6 +5878,7 @@ async fn on_server_message(
                 let mls = firefly_mls_client.clone();
                 let gis = group_info_store.clone();
                 let gms = group_message_store.clone();
+                let kvs = key_value_store.clone();
                 let pr = pending_requests.clone();
                 let snd = sender.clone();
                 let cb = callbacks.clone();
@@ -5864,6 +5890,7 @@ async fn on_server_message(
                         &mls,
                         &gis,
                         &gms,
+                        &kvs,
                         &pr,
                         &snd,
                         &cb,
